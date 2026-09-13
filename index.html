@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cover / Shannon Rebalance Lab</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+:root { --bg:#0b1020; --card:#151b2e; --ink:#e8eefc; --muted:#93a0c2; --line:#2a3354; --good:#3ddc97; --bad:#ff6b6b; --acc:#7aa2ff; }
+* { box-sizing:border-box; }
+body { margin:0; font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial; background:radial-gradient(1200px 600px at 10% -10%,#1b2a55 0%,var(--bg) 55%); color:var(--ink); }
+header { padding:28px 24px 8px; max-width:1200px; margin:0 auto; }
+h1 { margin:0 0 6px; font-size:28px; }
+.sub { color:var(--muted); max-width:820px; line-height:1.5; }
+.wrap { max-width:1200px; margin:0 auto; padding:16px 24px 48px; display:grid; grid-template-columns:340px 1fr; gap:18px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; }
+label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+input, select, textarea, button { width:100%; border:1px solid var(--line); background:#0f1528; color:var(--ink); border-radius:10px; padding:9px 10px; font:inherit; }
+textarea { min-height:90px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+button { background:var(--acc); color:#08101f; font-weight:700; cursor:pointer; margin-top:14px; }
+.row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.stats { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:14px; }
+.stat { background:#0f1528; border:1px solid var(--line); border-radius:12px; padding:10px; }
+.stat b { display:block; font-size:18px; }
+.stat span { color:var(--muted); font-size:11px; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); }
+.up { color:var(--good); } .down { color:var(--bad); }
+.note { color:var(--muted); font-size:13px; line-height:1.5; margin-top:12px; }
+@media (max-width:980px) { .wrap { grid-template-columns:1fr; } .stats { grid-template-columns:1fr 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cover / Shannon Rebalance Lab</h1>
+  <p class="sub">Simulate Thomas Cover’s constant-rebalanced portfolio: sell the winner, buy the loser, keep fixed weights. No price prediction. Compare it with buy-and-hold and see when the bonus is real.</p>
+</header>
+<div class="wrap">
+  <div class="card">
+    <label>Mode</label>
+    <select id="mode">
+      <option value="shannon">Shannon toy: stock + cash</option>
+      <option value="two">Shannon toy: two oscillating stocks</option>
+      <option value="hist" selected>Historical yearly presets</option>
+      <option value="csv">Paste your own prices</option>
+    </select>
+    <div id="histBox">
+      <label>Pair</label>
+      <select id="pair">
+        <option value="TSLA,GLD">TSLA + GLD</option>
+        <option value="NVDA,GLD">NVDA + GLD</option>
+        <option value="SPY,GLD">SPY + GLD</option>
+        <option value="QQQ,GLD">QQQ + GLD</option>
+        <option value="SPY,TLT">SPY + TLT</option>
+        <option value="TSLA,CASH">TSLA + CASH</option>
+        <option value="NVDA,CASH">NVDA + CASH</option>
+      </select>
+    </div>
+    <div id="toyBox" style="display:none">
+      <div class="row">
+        <div><label>Up move %</label><input id="up" value="50" /></div>
+        <div><label>Down move %</label><input id="dn" value="33.333" /></div>
+      </div>
+      <label>Periods</label><input id="periods" value="12" />
+    </div>
+    <div id="csvBox" style="display:none">
+      <label>CSV: date,assetA,assetB (or just two return columns)</label>
+      <textarea id="csv" placeholder="date,A,B
+2020-01-01,100,100
+2020-02-01,120,95"></textarea>
+    </div>
+    <div class="row">
+      <div><label>Weight in asset A %</label><input id="wA" value="50" /></div>
+      <div><label>Starting capital</label><input id="cap" value="100000" /></div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Rebalance</label>
+        <select id="freq">
+          <option value="every">Every period</option>
+          <option value="2">Every 2 periods</option>
+          <option value="never">Never (drift)</option>
+        </select>
+      </div>
+      <div><label>Cost per rebalance side (bps)</label><input id="cost" value="5" /></div>
+    </div>
+    <button id="run">Run simulation</button>
+    <p class="note">Historical presets use year-end prices 2016–2026. That is enough to see the Cover effect. Use the Python script in this repo for daily bars.</p>
+  </div>
+  <div class="card">
+    <div class="stats" id="stats"></div>
+    <canvas id="chart" height="120"></canvas>
+    <table id="tbl"></table>
+    <p class="note" id="verdict"></p>
+  </div>
+</div>
+<script>
+const YEAR_END = {
+  year: [2016,2017,2018,2019,2020,2021,2022,2023,2024,2025,2026],
+  TSLA: [14.25,20.76,22.19,27.89,235.22,352.26,123.18,248.48,403.84,449.72,365.44],
+  GLD:  [109.61,123.65,121.25,142.90,178.36,170.96,169.64,191.17,242.13,396.31,398.77],
+  NVDA: [2.67,4.84,3.34,5.88,13.06,29.41,14.61,49.52,134.29,186.50,218.29],
+  TLT:  [119.13,126.86,121.51,135.48,157.73,148.19,99.56,98.88,87.33,87.16,80.87],
+  SPY:  [223.53,266.86,249.92,321.86,373.88,474.96,382.43,475.31,586.08,681.92,764.29],
+  QQQ:  [118.48,155.76,154.26,212.61,313.74,397.85,266.28,409.52,511.23,614.31,714.88],
+  IWM:  [134.85,152.46,133.90,165.67,196.06,222.45,174.36,200.71,220.96,246.16,288.89],
+  CASH: [100,100,100,100,100,100,100,100,100,100,100]
+};
+let chart;
+function $(id){return document.getElementById(id)}
+function money(x){return x.toLocaleString(undefined,{style:"currency",currency:"USD",maximumFractionDigits:0})}
+function pct(x){return (x*100).toFixed(1)+"%"}
+$("mode").onchange = () => {
+  const m = $("mode").value;
+  $("histBox").style.display = m==="hist" ? "" : "none";
+  $("toyBox").style.display = (m==="shannon"||m==="two") ? "" : "none";
+  $("csvBox").style.display = m==="csv" ? "" : "none";
+};
+function metrics(path){
+  const r=[]; for(let i=1;i<path.length;i++) r.push(path[i]/path[i-1]-1);
+  const years = Math.max(path.length-1,1);
+  const cagr = Math.pow(path[path.length-1]/path[0], 1/years)-1;
+  let peak=path[0], maxdd=0;
+  path.forEach(v=>{ peak=Math.max(peak,v); maxdd=Math.min(maxdd, v/peak-1); });
+  const mean=r.reduce((a,b)=>a+b,0)/Math.max(r.length,1);
+  const sd=Math.sqrt(r.reduce((a,b)=>a+(b-mean)**2,0)/Math.max(r.length,1));
+  return {end:path[path.length-1], mult:path[path.length-1]/path[0], cagr, maxdd, vol:sd};
+}
+function simulate(pricesA, pricesB, labels, wA, cap, freq, costBps){
+  const wB=1-wA;
+  let a=cap*wA, b=cap*wB;
+  const crp=[cap], bahA=[cap*wA], bahB=[cap*wB], drift=[cap];
+  const a0=pricesA[0], b0=pricesB[0];
+  let sharesA=(cap*wA)/a0, sharesB=(cap*wB)/b0;
+  let costs=0, rebs=0;
+  for(let i=1;i<pricesA.length;i++){
+    const ra=pricesA[i]/pricesA[i-1], rb=pricesB[i]/pricesB[i-1];
+    a*=ra; b*=rb;
+    let total=a+b;
+    const doReb = freq==="every" || (freq==="2" && i%2===0);
+    if(doReb){
+      const targetA=total*wA, targetB=total*wB;
+      const traded=(Math.abs(targetA-a)+Math.abs(targetB-b))/2;
+      const fee=traded*(costBps/10000);
+      costs+=fee; total-=fee; a=total*wA; b=total*wB; rebs++;
+    }
+    crp.push(a+b);
+    bahA.push(sharesA*pricesA[i]);
+    bahB.push(sharesB*pricesB[i]);
+    drift.push(sharesA*pricesA[i]+sharesB*pricesB[i]);
+  }
+  return {labels, crp, drift, bahA, bahB, costs, rebs};
+}
+function shannonSeries(mode, up, dn, n){
+  const u=1+up/100, d=1-dn/100;
+  const A=[100], B=[100], labels=["0"];
+  for(let i=1;i<=n;i++){
+    if(mode==="shannon"){
+      A.push(A[i-1]*((i%2)?u:d));
+      B.push(100);
+    } else {
+      A.push(A[i-1]*((i%2)?u:d));
+      B.push(B[i-1]*((i%2)?d:u));
+    }
+    labels.push(String(i));
+  }
+  return {A,B,labels,nameA:"Stock A",nameB: mode==="shannon"?"Cash":"Stock B"};
+}
+function histSeries(pair){
+  const [a,b]=pair.split(",");
+  return {A:YEAR_END[a], B:YEAR_END[b], labels:YEAR_END.year.map(String), nameA:a, nameB:b};
+}
+function parseCsv(text){
+  const lines=text.trim().split(/\n/).filter(Boolean);
+  const A=[], B=[], labels=[];
+  for(const line of lines){
+    if(/date/i.test(line) && /[a-z]/i.test(line.split(",")[0])) continue;
+    const p=line.split(",").map(s=>s.trim());
+    if(p.length<3) continue;
+    labels.push(p[0]); A.push(+p[1]); B.push(+p[2]);
+  }
+  if(A.length<3) throw new Error("Need at least 3 price rows");
+  return {A,B,labels,nameA:"Asset A",nameB:"Asset B"};
+}
+function render(sim, names){
+  const mCRP=metrics(sim.crp), mDrift=metrics(sim.drift), mA=metrics(sim.bahA.map((v,i)=> i===0? +$("cap").value : v / (sim.bahA[0]/ (+$("cap").value * ( +$("wA").value/100 || .5))) ));
+  // simpler singles from paths already scaled to initial sleeves; rescale to full capital equivalents
+  const cap=+$("cap").value;
+  const pathA=sim.bahA.map(v=> v / (sim.bahA[0]) * cap);
+  const pathB=sim.bahB.map(v=> v / (sim.bahB[0]) * cap);
+  const sA=metrics(pathA), sB=metrics(pathB);
+  const bonus=mCRP.end-mDrift.end;
+  $("stats").innerHTML = [
+    ["CRP end", money(mCRP.end)],
+    ["Buy & hold pair", money(mDrift.end)],
+    ["Rebalance bonus", money(bonus)],
+    ["Costs paid", money(sim.costs)]
+  ].map(([k,v])=>`<div class="stat"><span>${k}</span><b>${v}</b></div>`).join("");
+  $("tbl").innerHTML = `<thead><tr><th>Strategy</th><th>End</th><th>Multiple</th><th>Per-period growth</th><th>Max DD</th></tr></thead><tbody>
+    <tr><td>CRP rebalanced</td><td>${money(mCRP.end)}</td><td>${mCRP.mult.toFixed(2)}x</td><td>${pct(mCRP.cagr)}</td><td>${pct(mCRP.maxdd)}</td></tr>
+    <tr><td>50/50 never rebalance</td><td>${money(mDrift.end)}</td><td>${mDrift.mult.toFixed(2)}x</td><td>${pct(mDrift.cagr)}</td><td>${pct(mDrift.maxdd)}</td></tr>
+    <tr><td>${names.a} 100%</td><td>${money(sA.end)}</td><td>${sA.mult.toFixed(2)}x</td><td>${pct(sA.cagr)}</td><td>${pct(sA.maxdd)}</td></tr>
+    <tr><td>${names.b} 100%</td><td>${money(sB.end)}</td><td>${sB.mult.toFixed(2)}x</td><td>${pct(sB.cagr)}</td><td>${pct(sB.maxdd)}</td></tr>
+  </tbody>`;
+  let msg;
+  if(bonus>0) msg = `Rebalancing made ${money(bonus)} more than letting the pair drift. That is the Cover bonus. It still may lose to 100% in the winner.`;
+  else msg = `Rebalancing lagged the drifted pair by ${money(-bonus)}. That happens when one asset is a persistent winner — you keep selling the thing that works.`;
+  $("verdict").textContent = msg + `  Rebalances: ${sim.rebs}.`;
+  if(chart) chart.destroy();
+  chart = new Chart($("chart"), {
+    type:"line",
+    data:{ labels:sim.labels, datasets:[
+      {label:"CRP", data:sim.crp, borderColor:"#7aa2ff", tension:.15, pointRadius:2},
+      {label:"No rebalance", data:sim.drift, borderColor:"#f0c36d", tension:.15, pointRadius:2},
+      {label:names.a+" 100%", data:pathA, borderColor:"#3ddc97", tension:.15, pointRadius:0, borderDash:[5,4]},
+      {label:names.b+" 100%", data:pathB, borderColor:"#ff6b6b", tension:.15, pointRadius:0, borderDash:[5,4]}
+    ]},
+    options:{ plugins:{legend:{labels:{color:"#e8eefc"}}}, scales:{
+      x:{ticks:{color:"#93a0c2"}, grid:{color:"#2a3354"}},
+      y:{ticks:{color:"#93a0c2", callback:v=>Intl.NumberFormat("en",{notation:"compact"}).format(v)}, grid:{color:"#2a3354"}}
+    }}
+  });
+}
+$("run").onclick = () => {
+  try{
+    const mode=$("mode").value;
+    const wA=Math.min(95, Math.max(5, +$("wA").value))/100;
+    const cap=+$("cap").value;
+    const freq=$("freq").value;
+    const cost=+$("cost").value;
+    let src;
+    if(mode==="shannon"||mode==="two") src=shannonSeries(mode, +$("up").value, +$("dn").value, +$("periods").value);
+    else if(mode==="csv") src=parseCsv($("csv").value);
+    else src=histSeries($("pair").value);
+    const sim=simulate(src.A, src.B, src.labels, wA, cap, freq, cost);
+    render(sim, {a:src.nameA, b:src.nameB});
+  }catch(e){ alert(e.message||e); }
+};
+$("run").click();
+</script>
+</body>
+</html>
